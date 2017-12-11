@@ -1,37 +1,140 @@
 package router
 
+//go:generate go run $GOPATH/src/v2ray.com/core/common/errors/errorgen/main.go -pkg router -path App,Router
+
 import (
-	"errors"
+	"context"
 
-	"github.com/v2ray/v2ray-core/app/point/config"
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	"v2ray.com/core/app"
+	"v2ray.com/core/app/dns"
+	"v2ray.com/core/app/log"
+	"v2ray.com/core/common"
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/proxy"
 )
 
 var (
-	RouterNotFound = errors.New("Router not found.")
+	ErrNoRuleApplicable = newError("No rule applicable")
 )
 
-type Router interface {
-	TakeDetour(v2net.Packet) (config.DetourTag, error)
+type Router struct {
+	domainStrategy Config_DomainStrategy
+	rules          []Rule
+	dnsServer      dns.Server
 }
 
-type RouterFactory interface {
-	Create(rawConfig interface{}) (Router, error)
+func NewRouter(ctx context.Context, config *Config) (*Router, error) {
+	space := app.SpaceFromContext(ctx)
+	if space == nil {
+		return nil, newError("no space in context")
+	}
+	r := &Router{
+		domainStrategy: config.DomainStrategy,
+		rules:          make([]Rule, len(config.Rule)),
+	}
+
+	space.On(app.SpaceInitializing, func(interface{}) error {
+		for idx, rule := range config.Rule {
+			r.rules[idx].Tag = rule.Tag
+			cond, err := rule.BuildCondition()
+			if err != nil {
+				return err
+			}
+			r.rules[idx].Condition = cond
+		}
+
+		r.dnsServer = dns.FromSpace(space)
+		if r.dnsServer == nil {
+			return newError("DNS is not found in the space")
+		}
+		return nil
+	})
+	return r, nil
 }
 
-var (
-	routerCache = make(map[string]RouterFactory)
-)
+type ipResolver struct {
+	ip        []net.Address
+	domain    string
+	resolved  bool
+	dnsServer dns.Server
+}
 
-func RegisterRouter(name string, factory RouterFactory) error {
-	// TODO: check name
-	routerCache[name] = factory
+func (r *ipResolver) Resolve() []net.Address {
+	if r.resolved {
+		return r.ip
+	}
+
+	log.Trace(newError("looking for IP for domain: ", r.domain))
+	r.resolved = true
+	ips := r.dnsServer.Get(r.domain)
+	if len(ips) == 0 {
+		return nil
+	}
+	r.ip = make([]net.Address, len(ips))
+	for i, ip := range ips {
+		r.ip[i] = net.IPAddress(ip)
+	}
+	return r.ip
+}
+
+func (r *Router) TakeDetour(ctx context.Context) (string, error) {
+	resolver := &ipResolver{
+		dnsServer: r.dnsServer,
+	}
+	if r.domainStrategy == Config_IpOnDemand {
+		if dest, ok := proxy.TargetFromContext(ctx); ok && dest.Address.Family().IsDomain() {
+			resolver.domain = dest.Address.Domain()
+			ctx = proxy.ContextWithResolveIPs(ctx, resolver)
+		}
+	}
+
+	for _, rule := range r.rules {
+		if rule.Apply(ctx) {
+			return rule.Tag, nil
+		}
+	}
+
+	dest, ok := proxy.TargetFromContext(ctx)
+	if !ok {
+		return "", ErrNoRuleApplicable
+	}
+
+	if r.domainStrategy == Config_IpIfNonMatch && dest.Address.Family().IsDomain() {
+		resolver.domain = dest.Address.Domain()
+		ips := resolver.Resolve()
+		if len(ips) > 0 {
+			ctx = proxy.ContextWithResolveIPs(ctx, resolver)
+			for _, rule := range r.rules {
+				if rule.Apply(ctx) {
+					return rule.Tag, nil
+				}
+			}
+		}
+	}
+
+	return "", ErrNoRuleApplicable
+}
+
+func (*Router) Interface() interface{} {
+	return (*Router)(nil)
+}
+
+func (*Router) Start() error {
 	return nil
 }
 
-func CreateRouter(name string, rawConfig interface{}) (Router, error) {
-	if factory, found := routerCache[name]; found {
-		return factory.Create(rawConfig)
+func (*Router) Close() {}
+
+func FromSpace(space app.Space) *Router {
+	app := space.GetApplication((*Router)(nil))
+	if app == nil {
+		return nil
 	}
-	return nil, RouterNotFound
+	return app.(*Router)
+}
+
+func init() {
+	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return NewRouter(ctx, config.(*Config))
+	}))
 }

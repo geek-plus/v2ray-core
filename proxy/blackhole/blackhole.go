@@ -1,40 +1,45 @@
+// Package blackhole is an outbound handler that blocks all connections.
 package blackhole
 
-import (
-	"io/ioutil"
+//go:generate go run $GOPATH/src/v2ray.com/core/common/errors/errorgen/main.go -pkg blackhole -path Proxy,Blackhole
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/proxy/common/connhandler"
-	"github.com/v2ray/v2ray-core/transport/ray"
+import (
+	"context"
+	"time"
+
+	"v2ray.com/core/common"
+	"v2ray.com/core/proxy"
+	"v2ray.com/core/transport/ray"
 )
 
-// BlackHole is an outbound connection that sliently swallow the entire payload.
-type BlackHole struct {
+// Handler is an outbound connection that silently swallow the entire payload.
+type Handler struct {
+	response ResponseConfig
 }
 
-func NewBlackHole() *BlackHole {
-	return &BlackHole{}
+// New creates a new blackhole handler.
+func New(ctx context.Context, config *Config) (*Handler, error) {
+	response, err := config.GetInternalResponse()
+	if err != nil {
+		return nil, err
+	}
+	return &Handler{
+		response: response,
+	}, nil
 }
 
-func (bh *BlackHole) Dispatch(firstPacket v2net.Packet, ray ray.OutboundRay) error {
-	if chunk := firstPacket.Chunk(); chunk != nil {
-		chunk.Release()
-	}
-
-	close(ray.OutboundOutput())
-	if firstPacket.MoreChunks() {
-		v2net.ChanToWriter(ioutil.Discard, ray.OutboundInput())
-	}
+// Process implements OutboundHandler.Dispatch().
+func (h *Handler) Process(ctx context.Context, outboundRay ray.OutboundRay, dialer proxy.Dialer) error {
+	h.response.WriteTo(outboundRay.OutboundOutput())
+	// Sleep a little here to make sure the response is sent to client.
+	time.Sleep(time.Second)
+	outboundRay.OutboundOutput().CloseError()
+	time.Sleep(time.Second * 2)
 	return nil
 }
 
-type BlackHoleFactory struct {
-}
-
-func (factory BlackHoleFactory) Create(config interface{}) (connhandler.OutboundConnectionHandler, error) {
-	return NewBlackHole(), nil
-}
-
 func init() {
-	connhandler.RegisterOutboundConnectionHandlerFactory("blackhole", BlackHoleFactory{})
+	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return New(ctx, config.(*Config))
+	}))
 }

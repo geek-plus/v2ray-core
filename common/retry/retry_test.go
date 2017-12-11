@@ -1,19 +1,20 @@
-package retry
+package retry_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
-	"github.com/v2ray/v2ray-core/testing/unit"
+	"v2ray.com/core/common/errors"
+	. "v2ray.com/core/common/retry"
+	. "v2ray.com/ext/assert"
 )
 
 var (
-	TestError = errors.New("This is a fake error.")
+	errorTestOnly = errors.New("This is a fake error.")
 )
 
 func TestNoRetry(t *testing.T) {
-	assert := unit.Assert(t)
+	assert := With(t)
 
 	startTime := time.Now().Unix()
 	err := Timed(10, 100000).On(func() error {
@@ -21,60 +22,72 @@ func TestNoRetry(t *testing.T) {
 	})
 	endTime := time.Now().Unix()
 
-	assert.Error(err).IsNil()
-	assert.Int64(endTime - startTime).AtLeast(0)
+	assert(err, IsNil)
+	assert(endTime-startTime, AtLeast, int64(0))
 }
 
 func TestRetryOnce(t *testing.T) {
-	assert := unit.Assert(t)
+	assert := With(t)
 
 	startTime := time.Now()
 	called := 0
 	err := Timed(10, 1000).On(func() error {
 		if called == 0 {
 			called++
-			return TestError
+			return errorTestOnly
 		}
 		return nil
 	})
 	duration := time.Since(startTime)
 
-	assert.Error(err).IsNil()
-	assert.Int64(int64(duration / time.Millisecond)).AtLeast(900)
+	assert(err, IsNil)
+	assert(int64(duration/time.Millisecond), AtLeast, int64(900))
 }
 
 func TestRetryMultiple(t *testing.T) {
-	assert := unit.Assert(t)
+	assert := With(t)
 
 	startTime := time.Now()
 	called := 0
 	err := Timed(10, 1000).On(func() error {
 		if called < 5 {
 			called++
-			return TestError
+			return errorTestOnly
 		}
 		return nil
 	})
 	duration := time.Since(startTime)
 
-	assert.Error(err).IsNil()
-	assert.Int64(int64(duration / time.Millisecond)).AtLeast(4900)
+	assert(err, IsNil)
+	assert(int64(duration/time.Millisecond), AtLeast, int64(4900))
 }
 
 func TestRetryExhausted(t *testing.T) {
-	assert := unit.Assert(t)
+	assert := With(t)
 
 	startTime := time.Now()
 	called := 0
 	err := Timed(2, 1000).On(func() error {
-		if called < 5 {
-			called++
-			return TestError
-		}
-		return nil
+		called++
+		return errorTestOnly
 	})
 	duration := time.Since(startTime)
 
-	assert.Error(err).Equals(RetryFailed)
-	assert.Int64(int64(duration / time.Millisecond)).AtLeast(1900)
+	assert(errors.Cause(err), Equals, ErrRetryFailed)
+	assert(int64(duration/time.Millisecond), AtLeast, int64(1900))
+}
+
+func TestExponentialBackoff(t *testing.T) {
+	assert := With(t)
+
+	startTime := time.Now()
+	called := 0
+	err := ExponentialBackoff(10, 100).On(func() error {
+		called++
+		return errorTestOnly
+	})
+	duration := time.Since(startTime)
+
+	assert(errors.Cause(err), Equals, ErrRetryFailed)
+	assert(int64(duration/time.Millisecond), AtLeast, int64(4000))
 }

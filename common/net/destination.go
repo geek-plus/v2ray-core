@@ -1,69 +1,66 @@
 package net
 
+import (
+	"net"
+)
+
 // Destination represents a network destination including address and protocol (tcp / udp).
-type Destination interface {
-	Network() string  // Protocol of communication (tcp / udp)
-	Address() Address // Address of destination
-	String() string   // String representation of the destination
-
-	IsTCP() bool // True if destination is reachable via TCP
-	IsUDP() bool // True if destination is reachable via UDP
+type Destination struct {
+	Network Network
+	Port    Port
+	Address Address
 }
 
-// NewTCPDestination creates a TCP destination with given address
-func NewTCPDestination(address Address) Destination {
-	return TCPDestination{address: address}
+// DestinationFromAddr generates a Destination from a net address.
+func DestinationFromAddr(addr net.Addr) Destination {
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return TCPDestination(IPAddress(addr.IP), Port(addr.Port))
+	case *net.UDPAddr:
+		return UDPDestination(IPAddress(addr.IP), Port(addr.Port))
+	default:
+		panic("Net: Unknown address type.")
+	}
 }
 
-// NewUDPDestination creates a UDP destination with given address
-func NewUDPDestination(address Address) Destination {
-	return UDPDestination{address: address}
+// TCPDestination creates a TCP destination with given address
+func TCPDestination(address Address, port Port) Destination {
+	return Destination{
+		Network: Network_TCP,
+		Address: address,
+		Port:    port,
+	}
 }
 
-type TCPDestination struct {
-	address Address
+// UDPDestination creates a UDP destination with given address
+func UDPDestination(address Address, port Port) Destination {
+	return Destination{
+		Network: Network_UDP,
+		Address: address,
+		Port:    port,
+	}
 }
 
-func (dest TCPDestination) Network() string {
-	return "tcp"
+// NetAddr returns the network address in this Destination in string form.
+func (d Destination) NetAddr() string {
+	return d.Address.String() + ":" + d.Port.String()
 }
 
-func (dest TCPDestination) Address() Address {
-	return dest.address
+// String returns the strings form of this Destination.
+func (d Destination) String() string {
+	return d.Network.URLPrefix() + ":" + d.NetAddr()
 }
 
-func (dest TCPDestination) String() string {
-	return "tcp:" + dest.address.String()
+// IsValid returns true if this Destination is valid.
+func (d Destination) IsValid() bool {
+	return d.Network != Network_Unknown
 }
 
-func (dest TCPDestination) IsTCP() bool {
-	return true
-}
-
-func (dest TCPDestination) IsUDP() bool {
-	return false
-}
-
-type UDPDestination struct {
-	address Address
-}
-
-func (dest UDPDestination) Network() string {
-	return "udp"
-}
-
-func (dest UDPDestination) Address() Address {
-	return dest.address
-}
-
-func (dest UDPDestination) String() string {
-	return "udp:" + dest.address.String()
-}
-
-func (dest UDPDestination) IsTCP() bool {
-	return false
-}
-
-func (dest UDPDestination) IsUDP() bool {
-	return true
+// AsDestination converts current Enpoint into Destination.
+func (p *Endpoint) AsDestination() Destination {
+	return Destination{
+		Network: p.Network,
+		Address: p.Address.AsAddress(),
+		Port:    Port(p.Port),
+	}
 }

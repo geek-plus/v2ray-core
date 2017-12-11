@@ -1,35 +1,32 @@
-package log
+package log_test
 
 import (
-	"bytes"
 	"testing"
 
-	"github.com/v2ray/v2ray-core/testing/unit"
+	"v2ray.com/core/common/log"
+	"v2ray.com/core/common/net"
+	. "v2ray.com/ext/assert"
 )
 
-func TestLogLevelSetting(t *testing.T) {
-	assert := unit.Assert(t)
-
-	assert.Pointer(debugLogger).Equals(noOpLoggerInstance)
-	SetLogLevel(DebugLevel)
-	assert.Pointer(debugLogger).Equals(streamLoggerInstance)
-
-	SetLogLevel(InfoLevel)
-	assert.Pointer(debugLogger).Equals(noOpLoggerInstance)
-	assert.Pointer(infoLogger).Equals(streamLoggerInstance)
+type testLogger struct {
+	value string
 }
 
-func TestStreamLogger(t *testing.T) {
-	assert := unit.Assert(t)
+func (l *testLogger) Handle(msg log.Message) {
+	l.value = msg.String()
+}
 
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	logger := &streamLogger{
-		writer: buffer,
-	}
-	logger.WriteLog("TestPrefix: ", "Test %s Format", "Stream Logger")
-	assert.Bytes(buffer.Bytes()).Equals([]byte("TestPrefix: Test Stream Logger Format\n"))
+func TestLogRecord(t *testing.T) {
+	assert := With(t)
 
-	buffer.Reset()
-	logger.WriteLog("TestPrefix: ", "Test No Format")
-	assert.Bytes(buffer.Bytes()).Equals([]byte("TestPrefix: Test No Format\n"))
+	var logger testLogger
+	log.RegisterHandler(&logger)
+
+	ip := "8.8.8.8"
+	log.Record(&log.GeneralMessage{
+		Severity: log.Severity_Error,
+		Content:  net.ParseAddress(ip),
+	})
+
+	assert(logger.value, Equals, "[Error]: "+ip)
 }
